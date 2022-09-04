@@ -1,7 +1,115 @@
-#include "./giessmon.h"
+#include ".\giessmon.h"
+
+boolean Summertime_active (int year, int month, int day, int hour) {
+  // ausgehend das die RTC in der Zeitzone UTC+1, also "Winterzeit Berlin" dauerhaft läuft
+  // European Daylight Savings Time calculation by "jurs" for German Arduino Forum
+  // input parameters: "normal time" for year, month, day, hour
+  // return value: returns true during Daylight Saving Time, false otherwise
+  //int x1,x2,x3;
+  static int x1,x2, lastYear; // Zur Beschleunigung des Codes ein Cache für einige statische Variablen
+  int x3;
+  if (month<3 || month>10) return false; // keine Sommerzeit in Jan, Feb, Nov, Dez
+  if (month>3 && month<10) return true;  // Sommerzeit in Apr, Mai, Jun, Jul, Aug, Sep
+  // der nachfolgende Code wird nur für Monat 3 und 10 ausgeführt
+  // Umstellung erfolgt auf Stunde utc_hour=1, in der Zeitzone Berlin entsprechend 2 Uhr MEZ
+  // Umstellungsbeginn und -ende
+  if (year!= lastYear) {
+    x1= 1 + 1 + 24*(31 - (5 * year /4 + 4) % 7); 
+    x2= 1 + 1 + 24*(31 - (5 * year /4 + 1) % 7);
+    lastYear=year;
+  }
+  x3= hour + 24 * day;
+  if ((month==3 && x3>=x1) || (month==10 && x3<x2)) return true; else return false;
+}
+
+int DayOfWeek(int year, uint8_t month, uint8_t day) {
+  // https://www.java-forum.org/thema/wochentag-eines-datums-berechnen.102915/
+  int wDay;
+  uint8_t daysInMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+
+  wDay = (year - 1900) * 365 + (year - 1900) / 4;
+  if (year % 4 && month <= 2) wDay--;
+  for(int i = 0; i < month - 1; i++) {
+            wDay += daysInMonth[i];
+  }
+
+	return (day + wDay) % 7;
+}
+
+void UTCp1 (int &year, int &month, int &day, int &wday, int &hour, int8_t Offset) {
+  // Zeitkorrektur könnte vereinfacht werden, da Mäher sicherlich vom Dez. bis Febr. nicht im Einsatz
+  // Diese Funktion ist eventuell auch durch eine aus <TimeLib.h> ersetzbar
+  const uint8_t numonth[] = {4, 6, 9, 11}; // Monate mit 30 Tagen
+  uint8_t DaysOfMonth = 31;
+
+  int h = hour + 24 + Offset;
+  if (h < 24) {
+    day--;
+    wday--;
+    if (wday < 0) wday = 6;
+    hour = h;
+  } else {
+    hour = h - 24;
+  }
+  if (hour >=24) {
+    hour -= 24;
+    day++;
+    wday++;
+    if (wday > 6) wday = 0;
+  }
+  if (day == 0) month--;
+  if (month == 2) { // Februar Schaltjahr?
+    DaysOfMonth = 28;
+    if ((year % 400) == 0 || ((year % 100) != 0 && (year % 4) == 0)) DaysOfMonth = 29;
+  } else {
+    for (uint8_t i = 0; i < 4; i++) {
+      if (month == numonth[i]) {
+        DaysOfMonth = 30;
+        break;
+      }
+    }
+  }
+  if (day == 0) { // Jahreswechsel zum Januar
+    day = DaysOfMonth;
+    if (month == 0) {
+      month = 12;
+      year--;
+    }
+  }
+  if (day > DaysOfMonth) { // Monatswechsel
+    day = 1;
+    month++;
+    if (month > 12) { // Jahreswechsel zum Dezember
+      month = 1;
+      year++;
+    }
+  }
+}
+
+boolean getTime(tm &timeinfo) {
+  boolean ret = false;
+  if(getLocalTime(&timeinfo)) {
+    timeinfo.tm_year += 1900;
+    timeinfo.tm_mon  += 1;
+    if (Summertime_active(timeinfo.tm_year, timeinfo.tm_mon, timeinfo.tm_mday, timeinfo.tm_hour)) {
+      UTCp1(timeinfo.tm_year, timeinfo.tm_mon, timeinfo.tm_mday, timeinfo.tm_wday, timeinfo.tm_hour, 1); // Sommerzeitkorrektur   
+    }
+    ret = true;
+  }
+  return ret;
+}
 
 #if defined DEBUG || defined DEBUG_TEMP_FILE
-  void debugOut(String message) {
+  #if defined DEBUG_SERIAL || defined DEBUG_TELNET
+  void DebugOut(boolean sdate, String message) {
+    if (sdate) {
+      char buffer[150];
+      tm timeinfo;
+      if (getTime(timeinfo)) {
+        sprintf(buffer, "%2d.%02d.%04d %2d:%02d:%02d ", timeinfo.tm_mday, timeinfo.tm_mon, timeinfo.tm_year, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      }
+      message = (String)buffer + message;
+    }
     #ifdef DEBUG_SERIAL
     Serial.print(message);
     #endif
@@ -9,6 +117,12 @@
     telnetClient.print(message);
     #endif
   }
+  
+  void DebugOut(String message) {
+    DebugOut(false, message);
+  }
+
+  #endif
 #endif
 
 String to_hex(uint8_t val) {
@@ -24,8 +138,8 @@ boolean TimeFullHour() {
   boolean ret = false;
 
   static uint16_t oldDayHour = 0;
-  if(getLocalTime(&timeinfo)){
-    currentDayHour = (timeinfo.tm_wday * 32 * 24) + (timeinfo.tm_mday * 24) + timeinfo.tm_hour;
+  if (getTime(timeinfo)) {
+    currentDayHour = (timeinfo.tm_wday << 10) | (timeinfo.tm_mday << 5) | timeinfo.tm_hour;
     if (oldDayHour != currentDayHour) { // Aufzeichnung für MW zur Stunde synchronisieren
       oldDayHour = currentDayHour;
       ret = true;
@@ -83,7 +197,7 @@ void puthtMeanData(float Temperature, float Humid) {
   }
   #ifdef DEBUG
   sprintf(debugBuffer, "sTemeratur: %d  sFeuchtigkeit: %d  divisor: %d\r\n", htMeanData.sumTemperature, htMeanData.sumHumid, htMeanData.divisor);
-  debugOut(debugBuffer);
+  DebugOut(true, debugBuffer);
   #endif
 }
 
@@ -91,12 +205,12 @@ void clearMeanData(uint8_t Sensor) {
   MeanData.Sensor[Sensor].divisor = 0;
 }
 
-uint8_t getMeanData(uint8_t Sensor) {
+/* uint8_t getMeanData(uint8_t Sensor) {
   if (MeanData.Sensor[Sensor].divisor > 0) {
     return MeanData.Sensor[Sensor].sumValue / MeanData.Sensor[Sensor].divisor;
   } else
     return 0;
-}
+} */
 
 void putMeanData(uint8_t Sensor, uint16_t data) {
   // Hysterese muss wie bei handle_renewtable() berücksichtigt werden
@@ -180,7 +294,7 @@ void nextRecord(record_t record, uint8_t Sensor, uint8_t Data) {
   changeChart = true; // Webseite derzeit angezeigten Chart neu einlesen
   #ifdef DEBUG
   sprintf(debugBuffer, "SensorDataWritten %d  %d%%\r\n", Sensor + 1, Data);
-  debugOut(debugBuffer);
+  DebugOut(true, debugBuffer);
   #endif
 }
 
@@ -212,13 +326,13 @@ void writeHistorySensor(uint8_t Sensor, uint8_t Data) {
           changeChart = true; // Webseite derzeit angezeigten Chart neu einlesen
           #ifdef DEBUG
           sprintf(debugBuffer, "SensorDataWritten %d  %d%%\r\n", Sensor + 1, Data);
-          debugOut(debugBuffer);
+          DebugOut(true, debugBuffer);
           #endif
         }
 
       } else {
         // Einträge/Adresszeiger erhöhen und ersten neuen Datensatz schreiben
-        // somit können/müssen später zugeschaltete Sensoren nachgeschrieben werden
+        // somit können/müssen später abgefragte/zugeschaltete Sensoren nachgeschrieben werden
         record.writePos += HISTSENS_SIZE;
         nextRecord(record, Sensor, Data);
       }
@@ -252,33 +366,34 @@ void Get_Moisture_DataInPercent(int8_t Sensor, boolean putValue) {
       Measure.Status[Sensor] = DataInvalid;
     } else {
       Measure.Status[Sensor] = DataValid;
+      Measure.RAW_Pct[Sensor] = Measure.Percent[Sensor];
       // putValue regelt x Minuten-Intervall Feuchtigkeitswert summieren für Ermittlung einfachen Mittelwert pro Stunde
       if (putValue || !Measure.written[Sensor]) { // falls mal DataInvalid speichern für Mittelwert nochmal versuchen
         putMeanData(Sensor, Measure.Percent[Sensor]);
         Measure.written[Sensor] = true;
         #ifdef DEBUG
         sprintf(debugBuffer, "Sensor: %d  Measure.Percent[Sensor]: %d  divisor: %d\r\n", Sensor+1, Measure.Percent[Sensor], MeanData.Sensor[Sensor].divisor);
-        debugOut(debugBuffer);
+        DebugOut(true, debugBuffer);
         #endif
       }
 
       if (MeanData.Sensor[Sensor].divisor > 0) { // aktuellen Mittelwert der Pflanzensensoren auf Webseite anzegen
-        Measure.Percent[Sensor] = getMeanData(Sensor);
+        Measure.Percent[Sensor] = MeanData.Sensor[Sensor].sumValue / MeanData.Sensor[Sensor].divisor;
       } // zur vollen Stunde werden Mittelwerte gelöscht, dann bereits zugewiesenen aktuellen Wert anzeigen
       // falls vorherige Daten mal ungültig zeigt DataToDisplay letzten validen Wert an
       DataToDisplay.humidPercent[Sensor] = int8_t(Measure.Percent[Sensor]); // HumidState wird erst bei renewindex ermittelt
       writeHistorySensor(Sensor, uint8_t(Measure.Percent[Sensor])); // Daten zur Datei im Flash
     }
   }
-  #ifdef DEBUG
-  if (putValue && Measure.Status[Sensor] != DataValid) {
+  /*#ifdef DEBUG
+  if (putValue && Measure.Status[Sensor] != DataValid) {*/
     sprintf(debugBuffer, "Sensor: %d  Measure.Percent: %d%%  Status: %d\r\n", Sensor + 1, Measure.Percent[Sensor], Measure.Status[Sensor]);
-    debugOut(debugBuffer);
-  }
-  #endif
+    DebugOut(true, debugBuffer);
+  /*}
+  #endif*/
 }
 
-void Run_MoistureSensors() { // Hauptfunktion zum Betrieb der Bodenfeuchtesensoren
+void Run_MoistureSensors() { // Hauptfunktion zum Betrieb der Bodenfeuchtesensoren POLL_INTERVALL 5 Sec
   boolean red1 = false;
   boolean yellow1 = false;
   boolean green1 = false;
@@ -310,12 +425,12 @@ void Run_MoistureSensors() { // Hauptfunktion zum Betrieb der Bodenfeuchtesensor
       #ifdef DEBUG
       case SensorCalibrate: {
         sprintf(debugBuffer, "Sensor %d nicht kalibiert. Bitte kalibrieren. Rohdatenwert:%d\r\n", i + 1, Measure.Humid_RAW[i]);
-        debugOut(debugBuffer);
+        DebugOut(true, debugBuffer);
         break;
       }
       case DataInvalid: {
         sprintf(debugBuffer, "Sensor %d Daten ungültig. Rohdatenwert:%d\r\n", i + 1,Measure.Humid_RAW[i]);
-        debugOut(debugBuffer);
+        DebugOut(true, debugBuffer);
         break;
       }
       #endif
@@ -351,8 +466,7 @@ sstatus Run_HTSensor() {
     HTMeasure.Temperature = hts.readTemperature();
     #endif
     if (isnan(HTMeasure.Humidity) || isnan(HTMeasure.Temperature) ) {
-      Serial.println(F("Lesen vom HT-Sensor fehlgeschlagen!"));
-      telnetClient.println(F("Lesen vom HT-Sensor fehlgeschlagen!"));
+      DebugOut(true, F("Lesen vom HT-Sensor fehlgeschlagen!"));
       HTMeasure.Status  = SensorNotDetected;
       return SensorNotDetected;
     }
@@ -614,13 +728,14 @@ String timeToTblStr(uint16_t ctime) {
   uint16_t wd, dh;
   
   String message = F(",[\"");
-  wd = ctime / (32 * 24);
-  dh = ctime - (wd * 32 * 24);
-  message.concat(String(dh / 24 ));
+  wd = (ctime >> 10) & 0b111;
+  dh = (ctime >> 5) & 0b11111;
+  message.concat(String(dh));
   message.concat(F(". "));
   message.concat(dow[wd]); // Wochentag
   message.concat(F(" "));
-  message.concat(String(dh % 24)); // Stunde
+  message.concat(String(ctime & 0b11111)); // Stunde
+
   message.concat(F(":00\","));
   return message;
 }
@@ -724,7 +839,7 @@ void handle_renewtable() {
         rx = sx / nx;
         #ifdef DEBUG
         sprintf(debugBuffer, "i: %d  nx: %d  adr: %X  deladr: %X  Feuchte: %d  Summe F: %d  del F: %d  gMW: %d\r\n", i, nx, debug_adr, debug_delAdr, historySensors.humidPercent[ChartTable], sx, oldHistSensors.humidPercent[ChartTable], rx);
-        debugOut(debugBuffer);
+        DebugOut(true, debugBuffer);
         #endif
 
         // gleitender Mittelwert für HT-Sensor berechnen
@@ -750,7 +865,7 @@ void handle_renewtable() {
         rh = sh / zht;
         #ifdef DEBUG
         sprintf(debugBuffer, "i: %d  zht: %d  adr: %X  deladr: %X  Temperatur: %d  Summe T: %d  del T: %d  gMW: %d\r\n", i, zht, debug_adr, debug_delAdr, historySensors.temperature, st, oldHistSensors.temperature, rt);
-        debugOut(debugBuffer);
+        DebugOut(true, debugBuffer);
         #endif
       } else 
       {
@@ -1068,7 +1183,7 @@ void handle_setrequest() {
   strcpy (str, webServer.arg("setVal").c_str());
   #ifdef DEBUG
   sprintf(debugBuffer, "Argumentenstring: %s\r\n", webServer.arg("setVal").c_str());
-  debugOut(debugBuffer);
+  DebugOut(true, debugBuffer);
   #endif
   oneArg = strtok(str, ",");
   while (oneArg != NULL) {
@@ -1081,10 +1196,10 @@ void handle_setrequest() {
   #ifdef DEBUG
   for (int i = 0; i < intArgs[1]+2; i++) {
     sprintf(debugBuffer,"Arg %d ist %d\r\n", i, intArgs[i]);
-    debugOut(debugBuffer);
+    DebugOut(true, debugBuffer);
   }
   sprintf(debugBuffer,"Arg Float ist %f\r\n", floatArg);
-  debugOut(debugBuffer);
+  DebugOut(true, debugBuffer);
   #endif
 
 
@@ -1163,7 +1278,7 @@ void handle_setrequest() {
           if (idx == pft) { // gezählte VT_RAW mit NO_EEPROM ist gleich ChartTable 0 bis 5
             #ifdef DEBUG
             sprintf(debugBuffer, "Pflanzens. %d\r\n", chart_table);
-            debugOut(debugBuffer);
+            DebugOut(debugBuffer);
             #endif
             ChartTable = chart_table;
             changeChart = true;
@@ -1300,7 +1415,7 @@ void handle_renewcalib() {
           break;
         }
         case VT_PROZENT: {
-          message.concat(String(Measure.Percent[Sensor]));
+          message.concat(String(Measure.RAW_Pct[Sensor]));
           message.concat(F("&nbsp;%"));
           Sensor++;
           break;
@@ -1407,7 +1522,7 @@ void handle_config() {
         for (int8_t x = -12; x < 13; x++) {
           message.concat(F("<option value='"));
           message.concat(String(x));
-          if (EEPROM.read(idxEEPROM) == x) {
+          if ((int8_t)EEPROM.read(idxEEPROM) == x) {
             message.concat(F("' selected>"));
           } else
             message.concat(F("'>"));
@@ -1503,7 +1618,7 @@ void handle_setcfg() {
   
   #ifdef DEBUG
   sprintf(debugBuffer, "v_type: %x idx: %d  swsetX: %d\r\n", v_type, idx, swsetX);
-  debugOut(debugBuffer);
+  DebugOut(true, debugBuffer);
   #endif
   switch (v_type) {
     case VT_CHECK: {
@@ -1677,53 +1792,50 @@ void startWebServers() {
   webServer.on("/setcfg", handle_setcfg);
   webServer.on("/fheap", handle_freeheap);
   webServer.on("/dump", handle_dump);
-  Serial.println(F("HTTP Server gestartet"));
+  DebugOut(true, F("HTTP Server gestartet"));
 }
 
 void StartUpdateServer() {
   updateServer.on("/", HTTP_GET, []() {
     updateServer.sendHeader("Connection", "close");
-    updateServer.send(200, "text/html", "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>");
+    updateServer.send(200, "text/html", serverIndex);
   });
+  /*handling uploading firmware file */
   updateServer.on("/update", HTTP_POST, []() {
     updateServer.sendHeader("Connection", "close");
-    updateServer.send(200, "text/plain", (Update.hasError()) ? F("Fehler") : F("OK"));
+    updateServer.send(200, "text/plain", (Update.hasError()) ? F("Fehler") : F("Ok"));
+    delay(1000);
     ESP.restart();
   }, []() {
     HTTPUpload& upload = updateServer.upload();
     if (upload.status == UPLOAD_FILE_START) {
-      //Serial.setDebugOutput(true);
-      webServer.close();
-      telnetServer.close();
-      Serial.println(F("Stop servers"));
+      Serial.setDebugOutput(true);
       Serial.printf("Update: %s\n", upload.filename.c_str());
-      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) { //mit der maximal verfügbaren Größe beginnen UPDATE_SIZE_UNKNOWN
+      if (!Update.begin()) { //start with max available size
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_WRITE) {
+      /* flashing firmware to ESP*/
       if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
         Update.printError(Serial);
       }
     } else if (upload.status == UPLOAD_FILE_END) {
-      if (Update.end(true)) { //true zum Einstellen der Größe auf den aktuellen Fortschritt
+      if (Update.end(true)) { //true to set the size to the current progress
         Serial.printf("Update Erfolgreich: %u\nNeustart...\n", upload.totalSize);
       } else {
         Update.printError(Serial);
-        telnetServer.begin();
-        telnetServer.setNoDelay(true);
-        startWebServers(); // trotzdem Webserver wieder starten, BLE bleibt aus
       }
-      //Serial.setDebugOutput(false);
     }
-    //timerWrite(timer, 0); //timer rücksetzen watchdog
+    yield();
   });
   updateServer.begin();
-  
-  Serial.print(F("HTTPUpdateServer bereit! Öffne http://"));
-  Serial.print(AppIp);
-  Serial.println(F(":8080/update im browser"));
   telnetServer.begin();
-  telnetServer.setNoDelay(true);
+  //telnetServer.setNoDelay(true);
+  DebugOut(true, F("\r\nHTTPUpdateServer bereit! Öffne http://"));
+  DebugOut(AppIp.toString().c_str());
+  DebugOut(F(":8080/update im browser\r\nTelnet Konsole bereit, zum Verbinden verwende 'telnet "));
+  DebugOut(AppIp.toString().c_str());
+  DebugOut(F(" 23'\r\n"));
   startWebServers();
 }
 
@@ -1842,7 +1954,7 @@ void TelnetDataIn() {
             if (record.entries > 0) {
               if (record.entries < MAXHISTORYENTRIES || record.writePos == HISTORYEND - HISTSENS_SIZE) {
                 #ifdef DEBUG_TEMP_FILE
-                debugOut("Nur Datenzatz abziehen.\r\n");
+                DebugOut(true, "Nur Datenzatz abziehen.\r\n");
                 #else
                 record.entries--;
                 if (record.writePos > RECORD_SIZE) {
@@ -1861,7 +1973,7 @@ void TelnetDataIn() {
                 }
                 adr = record.writePos + HISTSENS_SIZE;  // ältester Tabelleneintrag
                 binFile.seek(adr, SeekSet);
-                tmpFile = LITTLEFS.open(TEMP_FILENAME, "a"); // ToDo Testen w dann kein Löschen tmp, a wenn w nicht anhängt
+                tmpFile = LITTLEFS.open(TEMP_FILENAME, "a");
                 record.entries--;
                 record.writePos = HISTORYEND - (2 * HISTSENS_SIZE);
                 tmpFile.write(record.ar, RECORD_SIZE);
@@ -1876,7 +1988,7 @@ void TelnetDataIn() {
                 #ifdef DEBUG_TEMP_FILE
                 tmpFile.flush();
                 sprintf(debugBuffer, "Größe Temp: %d\r\n", tmpFile.size());
-                debugOut(debugBuffer);
+                DebugOut(true, debugBuffer);
                 #endif
                 tmpFile.close();
                 binFile.close();
@@ -2003,10 +2115,11 @@ void initializeWiFi() {
   WiFi.setHostname("PfSensor");
   WiFi.onEvent(WiFiEvent);
   WiFi.mode(WIFI_STA);
+  /* WiFi.setSleep(WIFI_PS_MIN_MODEM); // Der standardmäßige Modem-Ruhemodus ist WIFI_PS_MIN_MODEM.*/
 
   if (checkSSID != 0 && checkSSID != 0xFF) {
     if (manual_network == true) {
-      WiFi.config(manual_ip, manual_dns, manual_gw, manual_subnet);
+      WiFi.config(manual_ip, manual_gw, manual_subnet, manual_dns);
     }
   }
   WiFi.begin(wlanssid, wlankey);
@@ -2056,13 +2169,16 @@ void setup() {
   starttime = millis() + STARTTIME;
   EEPROM.begin(EEPROM_ALLOCATE_MEM);
   preferences.begin("Pfls", false);
+  //preferences.remove("firstInit"); 
+  //preferences.clear();
   firstInit = preferences.getString("firstInit");
   Serial.println(firstInit);
   if (firstInit != FIRST_INIT_KEY) {
     preferences.putString("firstInit", FIRST_INIT_KEY);
     Serial.println("Initialisierung");
-    //EEPROM mit 0x0 initialisieren undStandartwerte für Zeitzone gleitenden MW und LED setzen, LITTLEFS.begin(true) gegebenenfalls formatieren
-    EEPROMsetDefaultData();
+    // EEPROM mit 0x0 initialisieren undStandartwerte für Zeitzone gleitenden MW und LED setzen,
+    // LITTLEFS.begin(true) gegebenenfalls formatieren
+    //EEPROMsetDefaultData();
   } else Serial.println("War schon gestartet.");
   preferences.end();
 
@@ -2125,10 +2241,8 @@ void setup() {
   led_rgb.gn = 255;
   led_rgb.bl = 255;
   SetLed();
-  Serial.println();
-  Serial.println(F("Systemkonfiguration:"));
-  telnetClient.println();
-  telnetClient.println(F("Systemkonfiguration:"));
+  DebugOut(F("\r\n"));
+  DebugOut(true, F("Systemkonfiguration:"));
 
   #ifdef DHT_SENSOR
   dht.begin();
@@ -2137,8 +2251,7 @@ void setup() {
   hts.begin(i2caddr);
   #endif
   if (Run_HTSensor() != SensorNotDetected) {
-    Serial.println(F("1 HT-Sensor"));
-    telnetClient.println(F("1 HT-Sensor"));
+    DebugOut(F(" 1 HT-Sensor"));
   }
 
   led_rgb.rd = 0;

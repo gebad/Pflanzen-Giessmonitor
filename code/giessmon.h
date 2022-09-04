@@ -1,5 +1,6 @@
+#define DEBUG
 //#define DEBUG_SERIAL
-//#define DEBUG_TELNET
+#define DEBUG_TELNET
 //#define DEBUG_TEMP_FILE
 //#define EEPROMCLEAR // setzt EEPROM Konfiguration in Anfanszustand z.B. bei falscher fester IP
 //#define DHT_SENSOR
@@ -34,10 +35,10 @@
 #endif
 #include <rom/rtc.h> // für rtc_get_reset_reason
 
-#define SSID_WLAN  "Meine WLAN-SSID"     // SSID Router WLAN
-#define KEY_WLAN   "Mein WLAN-Schlüssel" // WLAN Netzwerkschlüssel
-#define USER_HTTP  "giessmon"
-#define PASS_HTTP  "GiessMon"
+#define SSID_WLAN  "meine_SSID"           // SSID Router WLAN
+#define KEY_WLAN   "mein_key" // WLAN Netzwerkschlüssel
+#define USER_HTTP  "pfls"
+#define PASS_HTTP  "PflS1b6"
 
 #if defined DEBUG_SERIAL || defined DEBUG_TELNET
   #define DEBUG
@@ -53,7 +54,7 @@
 // Nur angelegter Variablenname wäre auch ausreichend.
 #define FIRST_INIT_KEY  "tf~wU62!"
 
-char version[] = "1.0";
+char version[] = "1.1";
 String today  PROGMEM = __DATE__;
 String tstamp PROGMEM = __TIME__;
 String compiled_year PROGMEM = today.substring(7);
@@ -136,6 +137,7 @@ typedef struct {
   uint16_t Humid_RAW[MaxSensors] = {0, 0, 0, 0, 0, 0};
   uint16_t RAW_Min[MaxSensors] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
   uint16_t RAW_Max[MaxSensors] = {0, 0, 0, 0, 0, 0};
+  int16_t  RAW_Pct[MaxSensors] = {0, 0, 0, 0, 0, 0};
   int16_t  Percent[MaxSensors] = {0, 0, 0, 0, 0, 0};  // Feuchtigkeitssensordaten in Prozent; int16_t auch bei ungültigen Daten vernüftigen Wert anzeigen z.B. 130%
   boolean  written[MaxSensors] = {true, true, true, true, true, true}; // falls mal DataInvalid speichern für Mittelwert nochmal versuchen
   sstatus  Status [MaxSensors] = {SensorNotDetected, SensorNotDetected, SensorNotDetected, SensorNotDetected, SensorNotDetected, SensorNotDetected};
@@ -170,7 +172,6 @@ typedef struct {
   };
 } record_t;
 
-//typedef struct history_sensor_t{
 struct history_sensor_t{
   union {
     struct {
@@ -267,9 +268,49 @@ WiFiClient telnetClient;
 uint8_t wifiStatus = 0;
 uint16_t currentDayHour;
 int8_t tzOffset;
-const int   daylightOffset_sec = 3600; 
+const int   daylightOffset_sec = 0;//3600;
 #define STARTTIME 300000
 unsigned long starttime;
+const char* serverIndex = 
+PSTR("<script src='https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js'></script>"
+"<form method='POST'action='/update'enctype='multipart/form-data'id='upload_form'>"
+"<input type='file'name='update'>"
+"<input type='submit'value='Update'>"
+"</form>"
+"<div id='prg'>Fortschritt: 0%</div>"
+"<BR>"
+"<div id='result'></div>"
+"<script>"
+"$('form').submit(function(e){"
+"e.preventDefault();"
+"var form=$('#upload_form')[0];"
+"var data=new FormData(form);"
+"$.ajax({"
+"url:'/update',"
+"type:'POST',"
+"data:data,"
+"contentType:false,"
+"processData:false,"
+"xhr:function(){"
+"var xhr=new window.XMLHttpRequest();"
+"xhr.upload.addEventListener('progress',function(evt){"
+"if(evt.lengthComputable){"
+"var per=evt.loaded/evt.total;"
+"$('#prg').html('Fortschritt: '+Math.round(per*100)+'%');"
+"}"
+"},false);"
+"return xhr;"
+"},"
+"success:function(d,s){"
+"$('#result').html(d);"
+"},"
+"error:function(a,b,c){"
+"$('#result').html('Fehler');"
+"}"
+"});"
+"});"
+"</script>");
+
 
 // Portedefinierung RGP LED Modul
 #define LED_RED     0
